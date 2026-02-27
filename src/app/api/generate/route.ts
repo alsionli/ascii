@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import OpenAI from "openai";
 
 type Density = "sparse" | "medium" | "dense";
 
-const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"] as const;
+const MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"] as const;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -60,73 +59,12 @@ function stripCodeFences(text: string): string {
     .trim();
 }
 
-async function generateWithDeepseek(
-  apiKey: string,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<string> {
-  const client = new OpenAI({
-    apiKey,
-    baseURL: "https://api.deepseek.com",
-  });
-
-  const response = await client.chat.completions.create({
-    model: "deepseek-chat",
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    temperature: 0.8,
-    max_tokens: 16000,
-  });
-
-  const text = response.choices[0]?.message?.content ?? "";
-  return stripCodeFences(text);
-}
-
-async function generateWithGemini(
-  apiKey: string,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<string> {
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const baseUrl = process.env.GEMINI_BASE_URL;
-
-  let lastError: unknown;
-  for (let i = 0; i < GEMINI_MODELS.length; i++) {
-    try {
-      console.log(`Trying Gemini model: ${GEMINI_MODELS[i]}`);
-      const model = genAI.getGenerativeModel(
-        { model: GEMINI_MODELS[i], systemInstruction: systemPrompt },
-        baseUrl ? { baseUrl } : undefined
-      );
-      const result = await model.generateContent(userPrompt);
-      return stripCodeFences(result.response.text());
-    } catch (err: unknown) {
-      lastError = err;
-      const msg = err instanceof Error ? err.message : "";
-      console.error(`Gemini ${GEMINI_MODELS[i]} failed:`, msg);
-      const isRetryable =
-        msg.includes("429") || msg.includes("quota") || msg.includes("Too Many Requests") ||
-        msg.includes("location is not supported") || msg.includes("not available") ||
-        msg.includes("is not found");
-      if (isRetryable && i < GEMINI_MODELS.length - 1) {
-        await sleep(3000);
-        continue;
-      }
-    }
-  }
-  throw lastError;
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const deepseekKey = process.env.DEEPSEEK_API_KEY;
-    const geminiKey = process.env.GOOGLE_GEMINI_API_KEY;
-
-    if (!deepseekKey && !geminiKey) {
+    const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+    if (!apiKey) {
       return NextResponse.json(
-        { error: "No API key configured. Add DEEPSEEK_API_KEY or GOOGLE_GEMINI_API_KEY to .env.local" },
+        { error: "GOOGLE_GEMINI_API_KEY is not configured. Add it to .env.local" },
         { status: 500 }
       );
     }
@@ -140,43 +78,43 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const genAI = new GoogleGenerativeAI(apiKey);
     const systemPrompt = buildSystemPrompt(density as Density);
     const userPrompt = `Create a high-quality, detailed ASCII art of: ${prompt.slice(0, 500)}\n\nRemember: output ONLY the raw ASCII art, no code fences, no explanation.`;
 
-    // Try Deepseek first (works in China without VPN)
-    if (deepseekKey) {
+    let lastError: unknown;
+    for (let i = 0; i < MODELS.length; i++) {
       try {
-        console.log("Trying Deepseek...");
-        const ascii = await generateWithDeepseek(deepseekKey, systemPrompt, userPrompt);
-        return NextResponse.json({ ascii });
+        const model = genAI.getGenerativeModel({
+          model: MODELS[i],
+          systemInstruction: systemPrompt,
+        });
+        const result = await model.generateContent(userPrompt);
+        return NextResponse.json({ ascii: stripCodeFences(result.response.text()) });
       } catch (err: unknown) {
+        lastError = err;
         const msg = err instanceof Error ? err.message : "";
-        console.error("Deepseek failed:", msg);
-        if (!geminiKey) throw err;
+        const isRetryable =
+          msg.includes("429") || msg.includes("quota") || msg.includes("Too Many Requests") ||
+          msg.includes("is not found");
+        if (isRetryable && i < MODELS.length - 1) {
+          await sleep(3000);
+          continue;
+        }
       }
     }
 
-    // Fall back to Gemini
-    if (geminiKey) {
-      try {
-        console.log("Trying Gemini...");
-        const ascii = await generateWithGemini(geminiKey, systemPrompt, userPrompt);
-        return NextResponse.json({ ascii });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "";
-        console.error("Gemini failed:", msg);
-        throw err;
-      }
+    const msg = lastError instanceof Error ? lastError.message : "";
+    if (msg.includes("429") || msg.includes("quota")) {
+      return NextResponse.json(
+        { error: "Rate limit reached. Wait a minute and try again." },
+        { status: 429 }
+      );
     }
-
-    return NextResponse.json(
-      { error: "All providers failed." },
-      { status: 500 }
-    );
+    throw lastError;
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : "Failed to generate ASCII art";
-    console.error("Generate error:", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
