@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
 
 type Density = "sparse" | "medium" | "dense";
-
-const MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"] as const;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const DENSITY_INSTRUCTIONS: Record<Density, string> = {
   sparse: `
@@ -32,23 +28,17 @@ Style: Maximum detail, photo-like density.
 };
 
 function buildSystemPrompt(density: Density): string {
-  return `You are a world-class ASCII art artist. You produce museum-quality ASCII art.
+  return `You are an ASCII art generator. Output ONLY raw ASCII art — no markdown, no code fences, no backticks, no explanation, no titles.
 
-RULES — follow these exactly:
-1. Output ONLY raw ASCII art. No markdown, no code fences, no backticks, no explanation, no title, no labels.
-2. The art must be 60-80 lines tall and 80-120 characters wide.
-3. Every line must be the same width (pad with spaces on the right).
-4. Use only printable ASCII characters (codes 32-126).
-5. The subject must be clearly recognizable with accurate proportions and anatomy.
+RULES:
+1. The art must be 20-30 lines tall and 40-70 characters wide.
+2. Use only printable ASCII characters (codes 32-126).
+3. The subject must be clearly recognizable with correct proportions.
+4. Include the subject's most distinctive features so it is instantly identifiable.
+5. Left-align all lines — do NOT add leading spaces for centering. The leftmost character of the art should start at column 0 on every line that has content.
 
-TECHNIQUE:
-- Build the outline first with structural characters: / \\ | - _ ( ) < >
-- Use character weight/density to create shading gradients.
-- Lighter areas: . \` ' - : (fewer ink pixels per character)
-- Darker areas: # @ & % W M $ (more ink pixels per character)
-- Create depth with consistent light direction (top-left light source).
-- Use contour lines that follow the 3D form of the subject.
-- Add fine details: texture, patterns, subtle features.
+SHADING (light to dark): . : ; + = * # @ % &
+Outlines: / \\ | - _ ( ) < > [ ]
 ${DENSITY_INSTRUCTIONS[density]}`;
 }
 
@@ -59,12 +49,62 @@ function stripCodeFences(text: string): string {
     .trim();
 }
 
+function normalizeArt(raw: string): string {
+  let lines = raw.split("\n");
+
+  while (lines.length && lines[0].trim() === "") lines.shift();
+  while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+  lines = lines.map((l) => l.trimEnd());
+
+  if (lines.length < 2) return lines.join("\n");
+
+  // Calculate center-of-content for each non-empty line
+  const centers: { idx: number; center: number }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    const leading = lines[i].length - lines[i].trimStart().length;
+    centers.push({ idx: i, center: leading + trimmed.length / 2 });
+  }
+
+  if (centers.length < 3) return lines.join("\n");
+
+  // Median center (skip first line to get the "intended" center)
+  const otherCenters = centers.slice(1).map((c) => c.center).sort((a, b) => a - b);
+  const median = otherCenters[Math.floor(otherCenters.length / 2)];
+
+  // Fix lines whose center is far from median (typically just the first line)
+  for (const { idx } of centers) {
+    const trimmed = lines[idx].trim();
+    const leading = lines[idx].length - lines[idx].trimStart().length;
+    const curCenter = leading + trimmed.length / 2;
+    if (Math.abs(curCenter - median) > 3) {
+      const newLeading = Math.max(0, Math.round(median - trimmed.length / 2));
+      lines[idx] = " ".repeat(newLeading) + trimmed;
+    }
+  }
+
+  // Strip common indent
+  let minIndent = Infinity;
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    const leading = line.match(/^ */)?.[0].length ?? 0;
+    minIndent = Math.min(minIndent, leading);
+  }
+  if (isFinite(minIndent) && minIndent > 0) lines = lines.map((l) => l.slice(minIndent));
+
+  const maxLen = Math.max(...lines.map((l) => l.length));
+  lines = lines.map((l) => l.padEnd(maxLen));
+
+  return lines.join("\n");
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+    const apiKey = process.env.ARK_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "GOOGLE_GEMINI_API_KEY is not configured. Add it to .env.local" },
+        { error: "ARK_API_KEY is not configured. Add it to .env.local" },
         { status: 500 }
       );
     }
@@ -78,43 +118,58 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    const client = new OpenAI({
+      apiKey,
+      baseURL: "https://ark.cn-beijing.volces.com/api/v3",
+      timeout: 30_000,
+    });
+
     const systemPrompt = buildSystemPrompt(density as Density);
-    const userPrompt = `Create a high-quality, detailed ASCII art of: ${prompt.slice(0, 500)}\n\nRemember: output ONLY the raw ASCII art, no code fences, no explanation.`;
+    const userPrompt = `Create ASCII art of: ${prompt.slice(0, 500)}\n\nMake it instantly recognizable. Output ONLY the ASCII art, nothing else.`;
 
-    let lastError: unknown;
-    for (let i = 0; i < MODELS.length; i++) {
-      try {
-        const model = genAI.getGenerativeModel({
-          model: MODELS[i],
-          systemInstruction: systemPrompt,
-        });
-        const result = await model.generateContent(userPrompt);
-        return NextResponse.json({ ascii: stripCodeFences(result.response.text()) });
-      } catch (err: unknown) {
-        lastError = err;
-        const msg = err instanceof Error ? err.message : "";
-        const isRetryable =
-          msg.includes("429") || msg.includes("quota") || msg.includes("Too Many Requests") ||
-          msg.includes("is not found");
-        if (isRetryable && i < MODELS.length - 1) {
-          await sleep(3000);
-          continue;
-        }
-      }
-    }
+    const completion = await client.chat.completions.create({
+      model: process.env.ARK_MODEL || "deepseek-v3-2-251201",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 2048,
+    });
 
-    const msg = lastError instanceof Error ? lastError.message : "";
-    if (msg.includes("429") || msg.includes("quota")) {
+    const text = completion.choices[0]?.message?.content;
+    if (!text) {
       return NextResponse.json(
-        { error: "Rate limit reached. Wait a minute and try again." },
-        { status: 429 }
+        { error: "Model returned an empty response. Try again." },
+        { status: 500 }
       );
     }
-    throw lastError;
+
+    return NextResponse.json({ ascii: normalizeArt(stripCodeFences(text)) });
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : "Failed to generate ASCII art";
+    console.error("API error:", message);
+
+    if (message.includes("401") || message.includes("Unauthorized")) {
+      return NextResponse.json(
+        { error: "Invalid API key. Check your ARK_API_KEY." },
+        { status: 401 }
+      );
+    }
+    if (message.includes("429") || message.includes("rate")) {
+      return NextResponse.json(
+        { error: "Rate limit reached. Wait a moment and try again." },
+        { status: 429 }
+      );
+    }
+    if (message.includes("timed out") || message.includes("timeout") || message.includes("ETIMEDOUT")) {
+      return NextResponse.json(
+        { error: "Generation took too long. Try a simpler prompt." },
+        { status: 504 }
+      );
+    }
+
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
