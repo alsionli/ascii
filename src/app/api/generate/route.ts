@@ -149,7 +149,7 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : "Failed to generate ASCII art";
-    console.error("API error:", message);
+    console.error("API error:", message, err instanceof Error ? err.cause : "");
 
     if (message.includes("401") || message.includes("Unauthorized")) {
       return NextResponse.json(

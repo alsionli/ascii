@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import InputBar from "@/components/InputBar";
 import AsciiCanvas from "@/components/AsciiCanvas";
 import Toolbar, { type Density } from "@/components/Toolbar";
@@ -11,9 +11,14 @@ export default function Home() {
   const [density, setDensity] = useState<Density>("medium");
   const [lastPrompt, setLastPrompt] = useState("");
   const [error, setError] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
 
   const generate = useCallback(
     async (prompt: string, d: Density) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       setLoading(true);
       setError("");
       try {
@@ -21,6 +26,7 @@ export default function Home() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt, density: d }),
+          signal: controller.signal,
         });
         const data = await res.json();
         if (data.error) {
@@ -29,14 +35,24 @@ export default function Home() {
           setAscii(data.ascii);
           setLastPrompt(prompt);
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setError("Network error. Please try again.");
       } finally {
-        setLoading(false);
+        if (abortRef.current === controller) {
+          setLoading(false);
+          abortRef.current = null;
+        }
       }
     },
     []
   );
+
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+  };
 
   const handleSubmit = (prompt: string) => {
     generate(prompt, density);
@@ -76,7 +92,7 @@ export default function Home() {
       )}
 
       <div className="shrink-0 pb-16 pt-3 flex flex-col gap-3">
-        <InputBar onSubmit={handleSubmit} loading={loading} />
+        <InputBar onSubmit={handleSubmit} loading={loading} onStop={handleStop} />
 
         {ascii && (
           <Toolbar

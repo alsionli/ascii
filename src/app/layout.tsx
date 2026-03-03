@@ -10,8 +10,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ASCII Art Generator",
-  description:
-    "Generate beautiful ASCII art from text descriptions. Powered by Google Gemini.",
+  description: "Generate beautiful ASCII art from text descriptions.",
 };
 
 export default function RootLayout({
