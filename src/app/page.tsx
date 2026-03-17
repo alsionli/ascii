@@ -10,8 +10,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [density, setDensity] = useState<Density>("medium");
   const [lastPrompt, setLastPrompt] = useState("");
+  const [asciiFromImage, setAsciiFromImage] = useState(false);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const uploadedImageRef = useRef<File | null>(null);
 
   const generate = useCallback(
     async (prompt: string, d: Density) => {
@@ -34,6 +36,7 @@ export default function Home() {
         } else {
           setAscii(data.ascii);
           setLastPrompt(prompt);
+          setAsciiFromImage(false);
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
@@ -58,10 +61,19 @@ export default function Home() {
     generate(prompt, density);
   };
 
-  const handleDensityChange = (d: Density) => {
-    setDensity(d);
-    if (lastPrompt) generate(lastPrompt, d);
-  };
+  const handleDensityChange = useCallback(
+    async (d: Density) => {
+      setDensity(d);
+      if (lastPrompt) {
+        generate(lastPrompt, d);
+      } else if (asciiFromImage && uploadedImageRef.current) {
+        const { imageToAscii } = await import("@/lib/imageToAscii");
+        const result = await imageToAscii(uploadedImageRef.current, { density: d });
+        setAscii(result);
+      }
+    },
+    [lastPrompt, asciiFromImage, generate]
+  );
 
   const handleRegenerate = () => {
     if (lastPrompt) generate(lastPrompt, density);
@@ -81,6 +93,51 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  const handleImageConvert = useCallback((result: string, file: File) => {
+    setAscii(result);
+    setAsciiFromImage(true);
+    uploadedImageRef.current = file;
+    setError("");
+  }, []);
+
+  const handleEnhance = useCallback(async () => {
+    const file = uploadedImageRef.current;
+    if (!file || loading) return;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setLoading(true);
+    setError("");
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+      formData.append("density", density);
+
+      const res = await fetch("/api/generate-from-image", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (data.error) {
+        setError(data.error);
+      } else {
+        setAscii(data.ascii);
+        setAsciiFromImage(false);
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setError("Network error. Please try again.");
+    } finally {
+      if (abortRef.current === controller) {
+        setLoading(false);
+        abortRef.current = null;
+      }
+    }
+  }, [density, loading]);
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-[#09090b]">
       <AsciiCanvas ascii={ascii} loading={loading} />
@@ -92,7 +149,13 @@ export default function Home() {
       )}
 
       <div className="shrink-0 pb-16 pt-3 flex flex-col gap-3">
-        <InputBar onSubmit={handleSubmit} loading={loading} onStop={handleStop} />
+        <InputBar
+          onSubmit={handleSubmit}
+          onStop={handleStop}
+          onImageConvert={handleImageConvert}
+          loading={loading}
+          density={density}
+        />
 
         {ascii && (
           <Toolbar
@@ -101,6 +164,7 @@ export default function Home() {
             onRegenerate={handleRegenerate}
             onCopy={handleCopy}
             onDownload={handleDownload}
+            onEnhance={asciiFromImage ? handleEnhance : undefined}
             loading={loading}
           />
         )}

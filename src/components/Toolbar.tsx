@@ -10,6 +10,7 @@ interface ToolbarProps {
   onRegenerate: () => void;
   onCopy: () => void;
   onDownload: () => void;
+  onEnhance?: () => void;
   loading: boolean;
 }
 
@@ -25,6 +26,7 @@ export default function Toolbar({
   onRegenerate,
   onCopy,
   onDownload,
+  onEnhance,
   loading,
 }: ToolbarProps) {
   const [copied, setCopied] = useState(false);
@@ -54,6 +56,18 @@ export default function Toolbar({
         ))}
       </div>
 
+      {onEnhance && (
+        <button
+          onClick={onEnhance}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 bg-white/[0.04] border border-white/[0.08] rounded-full transition-all disabled:opacity-50 cursor-pointer"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2l2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5L12 2z" />
+          </svg>
+          Enhance with AI
+        </button>
+      )}
       <button
         onClick={onRegenerate}
         disabled={loading}
