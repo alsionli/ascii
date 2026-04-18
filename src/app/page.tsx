@@ -3,17 +3,25 @@
 import { useState, useCallback, useRef } from "react";
 import InputBar from "@/components/InputBar";
 import AsciiCanvas from "@/components/AsciiCanvas";
-import Toolbar, { type Density } from "@/components/Toolbar";
+import Toolbar, { type Density, type Style } from "@/components/Toolbar";
+import LiveAscii from "@/components/LiveAscii";
+import SourceActions from "@/components/SourceActions";
+
+type ResultSource = "prompt" | "image" | "snapshot";
 
 export default function Home() {
   const [ascii, setAscii] = useState("");
   const [loading, setLoading] = useState(false);
   const [density, setDensity] = useState<Density>("medium");
+  const [style, setStyle] = useState<Style>("hybrid");
+  const [source, setSource] = useState<ResultSource | null>(null);
   const [lastPrompt, setLastPrompt] = useState("");
-  const [asciiFromImage, setAsciiFromImage] = useState(false);
   const [error, setError] = useState("");
+  const [liveOpen, setLiveOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const uploadedImageRef = useRef<File | null>(null);
+
+  const inputVisible = source === null || source === "prompt";
 
   const generate = useCallback(
     async (prompt: string, d: Density) => {
@@ -36,7 +44,8 @@ export default function Home() {
         } else {
           setAscii(data.ascii);
           setLastPrompt(prompt);
-          setAsciiFromImage(false);
+          setSource("prompt");
+          uploadedImageRef.current = null;
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
@@ -61,22 +70,42 @@ export default function Home() {
     generate(prompt, density);
   };
 
+  const regenFromImage = useCallback(
+    async (d: Density, s: Style) => {
+      if (!uploadedImageRef.current) return;
+      const { imageToAscii } = await import("@/lib/imageToAscii");
+      const result = await imageToAscii(uploadedImageRef.current, {
+        density: d,
+        style: s,
+      });
+      setAscii(result);
+    },
+    []
+  );
+
   const handleDensityChange = useCallback(
     async (d: Density) => {
       setDensity(d);
-      if (lastPrompt) {
+      if (source === "prompt" && lastPrompt) {
         generate(lastPrompt, d);
-      } else if (asciiFromImage && uploadedImageRef.current) {
-        const { imageToAscii } = await import("@/lib/imageToAscii");
-        const result = await imageToAscii(uploadedImageRef.current, { density: d });
-        setAscii(result);
+      } else if (source === "image") {
+        regenFromImage(d, style);
       }
     },
-    [lastPrompt, asciiFromImage, generate]
+    [source, lastPrompt, generate, regenFromImage, style]
+  );
+
+  const handleStyleChange = useCallback(
+    (s: Style) => {
+      setStyle(s);
+      if (source === "image") regenFromImage(density, s);
+    },
+    [source, density, regenFromImage]
   );
 
   const handleRegenerate = () => {
-    if (lastPrompt) generate(lastPrompt, density);
+    if (source === "prompt" && lastPrompt) generate(lastPrompt, density);
+    else if (source === "image") regenFromImage(density, style);
   };
 
   const handleCopy = () => {
@@ -95,7 +124,8 @@ export default function Home() {
 
   const handleImageConvert = useCallback((result: string, file: File) => {
     setAscii(result);
-    setAsciiFromImage(true);
+    setSource("image");
+    setLastPrompt("");
     uploadedImageRef.current = file;
     setError("");
   }, []);
@@ -125,7 +155,9 @@ export default function Home() {
         setError(data.error);
       } else {
         setAscii(data.ascii);
-        setAsciiFromImage(false);
+        setSource("snapshot");
+        setLastPrompt("");
+        uploadedImageRef.current = null;
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
@@ -138,6 +170,44 @@ export default function Home() {
     }
   }, [density, loading]);
 
+  const handleLiveSnapshot = useCallback((snapshot: string) => {
+    setAscii(snapshot);
+    setSource("snapshot");
+    setLastPrompt("");
+    uploadedImageRef.current = null;
+    setError("");
+    setLiveOpen(false);
+  }, []);
+
+  const handleNew = useCallback(() => {
+    setAscii("");
+    setSource(null);
+    setLastPrompt("");
+    uploadedImageRef.current = null;
+    setError("");
+  }, []);
+
+  const toolbarProps =
+    source === "image"
+      ? {
+          density,
+          onDensityChange: handleDensityChange,
+          style,
+          onStyleChange: handleStyleChange,
+          onEnhance: handleEnhance,
+          onNew: handleNew,
+        }
+      : source === "prompt"
+      ? {
+          density,
+          onDensityChange: handleDensityChange,
+          onRegenerate: handleRegenerate,
+          onNew: handleNew,
+        }
+      : source === "snapshot"
+      ? { onNew: handleNew }
+      : null;
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-[#09090b]">
       <AsciiCanvas ascii={ascii} loading={loading} />
@@ -149,26 +219,41 @@ export default function Home() {
       )}
 
       <div className="shrink-0 pb-16 pt-3 flex flex-col gap-3">
-        <InputBar
-          onSubmit={handleSubmit}
-          onStop={handleStop}
-          onImageConvert={handleImageConvert}
-          loading={loading}
-          density={density}
-        />
+        {inputVisible && (
+          <InputBar
+            onSubmit={handleSubmit}
+            onStop={handleStop}
+            loading={loading}
+          />
+        )}
 
-        {ascii && (
-          <Toolbar
+        {source === null && (
+          <SourceActions
+            onImageConvert={handleImageConvert}
+            onOpenLive={() => setLiveOpen(true)}
+            loading={loading}
             density={density}
-            onDensityChange={handleDensityChange}
-            onRegenerate={handleRegenerate}
+            style={style}
+          />
+        )}
+
+        {toolbarProps && (
+          <Toolbar
+            {...toolbarProps}
             onCopy={handleCopy}
             onDownload={handleDownload}
-            onEnhance={asciiFromImage ? handleEnhance : undefined}
             loading={loading}
           />
         )}
       </div>
+
+      {liveOpen && (
+        <LiveAscii
+          onClose={() => setLiveOpen(false)}
+          onSnapshot={handleLiveSnapshot}
+          initialDensity={density}
+        />
+      )}
     </div>
   );
 }
