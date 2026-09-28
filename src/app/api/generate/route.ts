@@ -45,10 +45,11 @@ ${DENSITY_INSTRUCTIONS[density]}`;
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ARK_API_KEY;
+    const apiKey = process.env.SILICONFLOW_API_KEY;
     if (!apiKey) {
+      console.error("SILICONFLOW_API_KEY is not configured");
       return NextResponse.json(
-        { error: "ARK_API_KEY is not configured. Add it to .env.local" },
+        { error: "Text generation is temporarily unavailable. Please try again later." },
         { status: 500 }
       );
     }
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
 
     const client = new OpenAI({
       apiKey,
-      baseURL: "https://ark.cn-beijing.volces.com/api/v3",
+      baseURL: "https://api.siliconflow.cn/v1",
       timeout: 30_000,
     });
 
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
     const userPrompt = `Create ASCII art of: ${prompt.slice(0, 500)}\n\nMake it instantly recognizable. Output ONLY the ASCII art, nothing else.`;
 
     const completion = await client.chat.completions.create({
-      model: process.env.ARK_MODEL || "deepseek-v3-2-251201",
+      model: process.env.SILICONFLOW_MODEL || "XingChenAGI/Xing4.0-29B",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -97,7 +98,7 @@ export async function POST(req: NextRequest) {
 
     if (message.includes("401") || message.includes("Unauthorized")) {
       return NextResponse.json(
-        { error: "Invalid API key. Check your ARK_API_KEY." },
+        { error: "Text generation authentication failed. Please try again later." },
         { status: 401 }
       );
     }
