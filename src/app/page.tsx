@@ -3,7 +3,11 @@
 import { useState, useCallback, useRef } from "react";
 import InputBar from "@/components/InputBar";
 import AsciiCanvas from "@/components/AsciiCanvas";
-import Toolbar, { type Density, type Style } from "@/components/Toolbar";
+import Toolbar, {
+  type BackgroundMode,
+  type Density,
+  type Style,
+} from "@/components/Toolbar";
 import LiveAscii from "@/components/LiveAscii";
 import SourceActions from "@/components/SourceActions";
 
@@ -14,6 +18,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [density, setDensity] = useState<Density>("medium");
   const [style, setStyle] = useState<Style>("hybrid");
+  const [background, setBackground] = useState<BackgroundMode>("clean");
   const [source, setSource] = useState<ResultSource | null>(null);
   const [lastPrompt, setLastPrompt] = useState("");
   const [error, setError] = useState("");
@@ -71,12 +76,13 @@ export default function Home() {
   };
 
   const regenFromImage = useCallback(
-    async (d: Density, s: Style) => {
+    async (d: Density, s: Style, b: BackgroundMode) => {
       if (!uploadedImageRef.current) return;
       const { imageToAscii } = await import("@/lib/imageToAscii");
       const result = await imageToAscii(uploadedImageRef.current, {
         density: d,
         style: s,
+        background: b,
       });
       setAscii(result);
     },
@@ -89,23 +95,31 @@ export default function Home() {
       if (source === "prompt" && lastPrompt) {
         generate(lastPrompt, d);
       } else if (source === "image") {
-        regenFromImage(d, style);
+        regenFromImage(d, style, background);
       }
     },
-    [source, lastPrompt, generate, regenFromImage, style]
+    [source, lastPrompt, generate, regenFromImage, style, background]
   );
 
   const handleStyleChange = useCallback(
     (s: Style) => {
       setStyle(s);
-      if (source === "image") regenFromImage(density, s);
+      if (source === "image") regenFromImage(density, s, background);
     },
-    [source, density, regenFromImage]
+    [source, density, regenFromImage, background]
+  );
+
+  const handleBackgroundChange = useCallback(
+    (b: BackgroundMode) => {
+      setBackground(b);
+      if (source === "image") regenFromImage(density, style, b);
+    },
+    [source, density, style, regenFromImage]
   );
 
   const handleRegenerate = () => {
     if (source === "prompt" && lastPrompt) generate(lastPrompt, density);
-    else if (source === "image") regenFromImage(density, style);
+    else if (source === "image") regenFromImage(density, style, background);
   };
 
   const handleCopy = () => {
@@ -194,6 +208,8 @@ export default function Home() {
           onDensityChange: handleDensityChange,
           style,
           onStyleChange: handleStyleChange,
+          background,
+          onBackgroundChange: handleBackgroundChange,
           onEnhance: handleEnhance,
           onNew: handleNew,
         }
@@ -234,6 +250,7 @@ export default function Home() {
             loading={loading}
             density={density}
             style={style}
+            background={background}
           />
         )}
 
