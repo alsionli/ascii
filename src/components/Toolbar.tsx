@@ -4,12 +4,15 @@ import { useState } from "react";
 
 export type Density = "sparse" | "medium" | "dense";
 export type Style = "luminance" | "edge" | "hybrid";
+export type BackgroundMode = "keep" | "clean";
 
 interface ToolbarProps {
   density?: Density;
   onDensityChange?: (d: Density) => void;
   style?: Style;
   onStyleChange?: (s: Style) => void;
+  background?: BackgroundMode;
+  onBackgroundChange?: (b: BackgroundMode) => void;
   onRegenerate?: () => void;
   onCopy: () => void;
   onDownload: () => void;
@@ -30,11 +33,18 @@ const STYLES: { value: Style; label: string }[] = [
   { value: "hybrid", label: "Hybrid" },
 ];
 
+const BACKGROUNDS: { value: BackgroundMode; label: string }[] = [
+  { value: "clean", label: "Clean BG" },
+  { value: "keep", label: "Original" },
+];
+
 export default function Toolbar({
   density,
   onDensityChange,
   style,
   onStyleChange,
+  background,
+  onBackgroundChange,
   onRegenerate,
   onCopy,
   onDownload,
@@ -51,7 +61,9 @@ export default function Toolbar({
   };
 
   const hasSettingsRow =
-    (onDensityChange && density) || (onStyleChange && style);
+    (onDensityChange && density) ||
+    (onStyleChange && style) ||
+    (onBackgroundChange && background);
 
   return (
     <div className="animate-slide-up flex flex-col items-center gap-2 px-4">
@@ -90,6 +102,26 @@ export default function Toolbar({
                   } disabled:opacity-50`}
                 >
                   {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {onBackgroundChange && background && (
+            <div className="flex items-center bg-white/[0.04] border border-white/[0.08] rounded-full p-0.5">
+              {BACKGROUNDS.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => onBackgroundChange(option.value)}
+                  disabled={loading}
+                  aria-pressed={background === option.value}
+                  className={`px-3 py-1.5 text-xs rounded-full transition-all cursor-pointer ${
+                    background === option.value
+                      ? "bg-white/10 text-zinc-100"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  } disabled:opacity-50`}
+                >
+                  {option.label}
                 </button>
               ))}
             </div>

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { imageToAscii } from "@/lib/imageToAscii";
-import type { Density, Style } from "./Toolbar";
+import type { BackgroundMode, Density, Style } from "./Toolbar";
 
 interface SourceActionsProps {
   onImageConvert: (ascii: string, file: File) => void;
@@ -10,6 +10,7 @@ interface SourceActionsProps {
   loading: boolean;
   density: Density;
   style: Style;
+  background: BackgroundMode;
 }
 
 export default function SourceActions({
@@ -18,6 +19,7 @@ export default function SourceActions({
   loading,
   density,
   style,
+  background,
 }: SourceActionsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [converting, setConverting] = useState(false);
@@ -29,7 +31,7 @@ export default function SourceActions({
     if (!file.type.startsWith("image/")) return;
     setConverting(true);
     try {
-      const ascii = await imageToAscii(file, { density, style });
+      const ascii = await imageToAscii(file, { density, style, background });
       onImageConvert(ascii, file);
     } catch {
     } finally {

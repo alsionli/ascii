@@ -136,6 +136,7 @@ export default function LiveAscii({
             style: s.style,
             charset: s.charset,
             invert: s.invert,
+            autoContrast: false,
           });
           preRef.current.textContent = ascii;
         };
@@ -173,6 +174,7 @@ export default function LiveAscii({
       style: s.style,
       charset: s.charset,
       invert: s.invert,
+      autoContrast: false,
     });
     if (ascii) onSnapshot(ascii);
   }, [cols, onSnapshot]);
