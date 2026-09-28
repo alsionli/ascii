@@ -1,6 +1,7 @@
 export type Density = "sparse" | "medium" | "dense";
 export type Charset = "ascii" | "blocks" | "braille";
 export type Style = "luminance" | "edge" | "hybrid";
+export type BackgroundMode = "keep" | "clean";
 
 const LUMINANCE_GRADIENTS: Record<Density, string> = {
   sparse: " .:-",
@@ -22,6 +23,8 @@ export type PixelsToAsciiOptions = {
   density?: Density;
   charset?: Charset;
   style?: Style;
+  background?: BackgroundMode;
+  autoContrast?: boolean;
   edgeThreshold?: number;
   invert?: boolean;
 };
@@ -44,6 +47,64 @@ function buildGrayscale(
     out[j] = getLuminance(data[i], data[i + 1], data[i + 2]);
   }
   return out;
+}
+
+function percentile(histogram: Uint32Array, total: number, value: number) {
+  const target = total * value;
+  let count = 0;
+  for (let i = 0; i < histogram.length; i++) {
+    count += histogram[i];
+    if (count >= target) return i;
+  }
+  return 255;
+}
+
+/** Stretch the useful 1–99% tonal range, matching photo-editor auto contrast. */
+function normalizeContrast(gray: Float32Array): Float32Array {
+  const histogram = new Uint32Array(256);
+  for (let i = 0; i < gray.length; i++) {
+    histogram[Math.max(0, Math.min(255, Math.round(gray[i])))]++;
+  }
+
+  const low = percentile(histogram, gray.length, 0.01);
+  const high = percentile(histogram, gray.length, 0.99);
+  if (high - low < 12) return gray;
+
+  const out = new Float32Array(gray.length);
+  const scale = 255 / (high - low);
+  for (let i = 0; i < gray.length; i++) {
+    const stretched = (gray[i] - low) * scale;
+    // A small S-curve keeps faces readable without crushing midtones.
+    const normalized = Math.max(0, Math.min(255, stretched)) / 255;
+    const contrasted = (normalized - 0.5) * 1.12 + 0.5;
+    out[i] = Math.max(0, Math.min(255, contrasted * 255));
+  }
+  return out;
+}
+
+type BorderStats = { mean: number; deviation: number };
+
+function getBorderStats(gray: Float32Array, w: number, h: number): BorderStats {
+  const inset = Math.max(1, Math.round(Math.min(w, h) * 0.04));
+  let sum = 0;
+  let sumSquared = 0;
+  let count = 0;
+
+  for (let y = 0; y < h; y += inset) {
+    for (let x = 0; x < w; x += inset) {
+      if (x >= inset && x < w - inset && y >= inset && y < h - inset) {
+        continue;
+      }
+      const value = gray[y * w + x];
+      sum += value;
+      sumSquared += value * value;
+      count++;
+    }
+  }
+
+  const mean = count ? sum / count : 255;
+  const variance = count ? Math.max(0, sumSquared / count - mean * mean) : 0;
+  return { mean, deviation: Math.sqrt(variance) };
 }
 
 type SobelResult = { mag: Float32Array; angle: Float32Array };
@@ -136,12 +197,23 @@ export function pixelsToAscii(
     density = "medium",
     charset = "ascii",
     style = "luminance",
+    background = "keep",
+    autoContrast = true,
     edgeThreshold = 80,
     invert = false,
   } = options;
 
   const { data, width: srcW, height: srcH } = imageData;
-  const gray = buildGrayscale(data, srcW, srcH);
+  const sourceGray = buildGrayscale(data, srcW, srcH);
+  const gray = autoContrast ? normalizeContrast(sourceGray) : sourceGray;
+  const border = getBorderStats(gray, srcW, srcH);
+  const canCleanBackground = background === "clean" && border.deviation < 70;
+  const backgroundTolerance = Math.max(
+    16,
+    Math.min(54, border.deviation * 1.6 + 10)
+  );
+  // A bright border usually means dark-on-light artwork, and vice versa.
+  const effectiveInvert = canCleanBackground ? border.mean >= 128 : invert;
 
   const charAspect = charset === "braille" ? 0.5 : CHAR_ASPECT;
   const blockW = srcW / width;
@@ -177,7 +249,7 @@ export function pixelsToAscii(
           xEnd - xStart,
           yEnd - yStart,
           edgeThreshold,
-          invert
+          effectiveInvert
         );
         continue;
       }
@@ -204,6 +276,10 @@ export function pixelsToAscii(
       }
       const avgLum = count ? sumLum / count : 0;
       const avgMag = count ? sumMag / count : 0;
+      const isBackground =
+        canCleanBackground &&
+        Math.abs(avgLum - border.mean) <= backgroundTolerance &&
+        avgMag < edgeThreshold * 0.55;
 
       if (style === "edge") {
         if (avgMag > edgeThreshold) {
@@ -212,13 +288,17 @@ export function pixelsToAscii(
           line += " ";
         }
       } else if (style === "hybrid") {
-        if (bestMag > edgeThreshold * 2) {
+        if (isBackground) {
+          line += " ";
+        } else if (bestMag > edgeThreshold * 2) {
           line += pickEdgeChar(bestAngle, usingBlocks ? "blocks" : "ascii");
         } else {
-          line += luminanceToChar(avgLum, gradient, invert);
+          line += luminanceToChar(avgLum, gradient, effectiveInvert);
         }
       } else {
-        line += luminanceToChar(avgLum, gradient, invert);
+        line += isBackground
+          ? " "
+          : luminanceToChar(avgLum, gradient, effectiveInvert);
       }
     }
     lines.push(line);
@@ -240,6 +320,9 @@ function sourceToImageData(
   const h = Math.max(1, Math.round(w * aspect));
   canvas.width = w;
   canvas.height = h;
+  // Transparent PNG pixels otherwise read as black and turn into false detail.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
   ctx.drawImage(source, 0, 0, w, h);
   return ctx.getImageData(0, 0, w, h);
 }
