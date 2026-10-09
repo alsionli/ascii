@@ -29,7 +29,12 @@ export default function Home() {
   const inputVisible = source === null || source === "prompt";
 
   const generate = useCallback(
-    async (prompt: string, d: Density) => {
+    async (
+      prompt: string,
+      d: Density,
+      s: Style,
+      b: BackgroundMode
+    ) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -40,17 +45,30 @@ export default function Home() {
         const res = await fetch("/api/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, density: d }),
+          body: JSON.stringify({ prompt }),
           signal: controller.signal,
         });
-        const data = await res.json();
-        if (data.error) {
-          setError(data.error);
+        if (!res.ok) {
+          const data = await res.json();
+          setError(
+            data.error || "Failed to generate an image. Please try again."
+          );
         } else {
-          setAscii(data.ascii);
+          const blob = await res.blob();
+          const file = new File([blob], "generated-source-image", {
+            type: blob.type || "image/jpeg",
+          });
+          const { imageToAscii } = await import("@/lib/imageToAscii");
+          const result = await imageToAscii(file, {
+            density: d,
+            style: s,
+            background: b,
+          });
+
+          setAscii(result);
           setLastPrompt(prompt);
           setSource("prompt");
-          uploadedImageRef.current = null;
+          uploadedImageRef.current = file;
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
@@ -72,7 +90,7 @@ export default function Home() {
   };
 
   const handleSubmit = (prompt: string) => {
-    generate(prompt, density);
+    generate(prompt, density, style, background);
   };
 
   const regenFromImage = useCallback(
@@ -92,19 +110,19 @@ export default function Home() {
   const handleDensityChange = useCallback(
     async (d: Density) => {
       setDensity(d);
-      if (source === "prompt" && lastPrompt) {
-        generate(lastPrompt, d);
-      } else if (source === "image") {
+      if (source === "prompt" || source === "image") {
         regenFromImage(d, style, background);
       }
     },
-    [source, lastPrompt, generate, regenFromImage, style, background]
+    [source, regenFromImage, style, background]
   );
 
   const handleStyleChange = useCallback(
     (s: Style) => {
       setStyle(s);
-      if (source === "image") regenFromImage(density, s, background);
+      if (source === "prompt" || source === "image") {
+        regenFromImage(density, s, background);
+      }
     },
     [source, density, regenFromImage, background]
   );
@@ -112,14 +130,19 @@ export default function Home() {
   const handleBackgroundChange = useCallback(
     (b: BackgroundMode) => {
       setBackground(b);
-      if (source === "image") regenFromImage(density, style, b);
+      if (source === "prompt" || source === "image") {
+        regenFromImage(density, style, b);
+      }
     },
     [source, density, style, regenFromImage]
   );
 
   const handleRegenerate = () => {
-    if (source === "prompt" && lastPrompt) generate(lastPrompt, density);
-    else if (source === "image") regenFromImage(density, style, background);
+    if (source === "prompt" && lastPrompt) {
+      generate(lastPrompt, density, style, background);
+    } else if (source === "image") {
+      regenFromImage(density, style, background);
+    }
   };
 
   const handleCopy = () => {
@@ -217,6 +240,10 @@ export default function Home() {
       ? {
           density,
           onDensityChange: handleDensityChange,
+          style,
+          onStyleChange: handleStyleChange,
+          background,
+          onBackgroundChange: handleBackgroundChange,
           onRegenerate: handleRegenerate,
           onNew: handleNew,
         }
