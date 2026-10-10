@@ -7,6 +7,37 @@ type SiliconFlowImageResponse = {
   message?: string;
 };
 
+function detectImageContentType(bytes: Uint8Array): string | null {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return "image/png";
+  }
+
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return "image/jpeg";
+  }
+
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+
+  return null;
+}
+
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -101,10 +132,19 @@ export async function POST(req: NextRequest) {
       return jsonError("Failed to load the generated image. Try again.", 502);
     }
 
-    return new NextResponse(await imageResponse.arrayBuffer(), {
+    const imageBuffer = await imageResponse.arrayBuffer();
+    const upstreamContentType = imageResponse.headers.get("content-type");
+    const detectedContentType = detectImageContentType(
+      new Uint8Array(imageBuffer)
+    );
+
+    return new NextResponse(imageBuffer, {
       headers: {
         "Content-Type":
-          imageResponse.headers.get("content-type") || "image/jpeg",
+          detectedContentType ||
+          (upstreamContentType?.startsWith("image/")
+            ? upstreamContentType
+            : "image/jpeg"),
         "Cache-Control": "no-store",
       },
     });
