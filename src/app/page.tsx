@@ -55,8 +55,11 @@ export default function Home() {
           );
         } else {
           const blob = await res.blob();
+          const imageType = blob.type.startsWith("image/")
+            ? blob.type
+            : "image/jpeg";
           const file = new File([blob], "generated-source-image", {
-            type: blob.type || "image/jpeg",
+            type: imageType,
           });
           const { imageToAscii } = await import("@/lib/imageToAscii");
           const result = await imageToAscii(file, {
@@ -72,7 +75,8 @@ export default function Home() {
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError("Network error. Please try again.");
+        console.error("Generated image processing failed:", err);
+        setError("Could not process the generated image. Please try again.");
       } finally {
         if (abortRef.current === controller) {
           setLoading(false);
