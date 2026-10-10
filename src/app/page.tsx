@@ -3,7 +3,11 @@
 import { useState, useCallback, useRef } from "react";
 import InputBar from "@/components/InputBar";
 import AsciiCanvas from "@/components/AsciiCanvas";
-import Toolbar, { type Density, type Style } from "@/components/Toolbar";
+import Toolbar, {
+  type BackgroundMode,
+  type Density,
+  type Style,
+} from "@/components/Toolbar";
 import LiveAscii from "@/components/LiveAscii";
 import SourceActions from "@/components/SourceActions";
 
@@ -14,6 +18,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [density, setDensity] = useState<Density>("medium");
   const [style, setStyle] = useState<Style>("hybrid");
+  const [background, setBackground] = useState<BackgroundMode>("clean");
   const [source, setSource] = useState<ResultSource | null>(null);
   const [lastPrompt, setLastPrompt] = useState("");
   const [error, setError] = useState("");
@@ -24,7 +29,12 @@ export default function Home() {
   const inputVisible = source === null || source === "prompt";
 
   const generate = useCallback(
-    async (prompt: string, d: Density) => {
+    async (
+      prompt: string,
+      d: Density,
+      s: Style,
+      b: BackgroundMode
+    ) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -35,21 +45,38 @@ export default function Home() {
         const res = await fetch("/api/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, density: d }),
+          body: JSON.stringify({ prompt }),
           signal: controller.signal,
         });
-        const data = await res.json();
-        if (data.error) {
-          setError(data.error);
+        if (!res.ok) {
+          const data = await res.json();
+          setError(
+            data.error || "Failed to generate an image. Please try again."
+          );
         } else {
-          setAscii(data.ascii);
+          const blob = await res.blob();
+          const imageType = blob.type.startsWith("image/")
+            ? blob.type
+            : "image/jpeg";
+          const file = new File([blob], "generated-source-image", {
+            type: imageType,
+          });
+          const { imageToAscii } = await import("@/lib/imageToAscii");
+          const result = await imageToAscii(file, {
+            density: d,
+            style: s,
+            background: b,
+          });
+
+          setAscii(result);
           setLastPrompt(prompt);
           setSource("prompt");
-          uploadedImageRef.current = null;
+          uploadedImageRef.current = file;
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError("Network error. Please try again.");
+        console.error("Generated image processing failed:", err);
+        setError("Could not process the generated image. Please try again.");
       } finally {
         if (abortRef.current === controller) {
           setLoading(false);
@@ -67,16 +94,17 @@ export default function Home() {
   };
 
   const handleSubmit = (prompt: string) => {
-    generate(prompt, density);
+    generate(prompt, density, style, background);
   };
 
   const regenFromImage = useCallback(
-    async (d: Density, s: Style) => {
+    async (d: Density, s: Style, b: BackgroundMode) => {
       if (!uploadedImageRef.current) return;
       const { imageToAscii } = await import("@/lib/imageToAscii");
       const result = await imageToAscii(uploadedImageRef.current, {
         density: d,
         style: s,
+        background: b,
       });
       setAscii(result);
     },
@@ -86,26 +114,39 @@ export default function Home() {
   const handleDensityChange = useCallback(
     async (d: Density) => {
       setDensity(d);
-      if (source === "prompt" && lastPrompt) {
-        generate(lastPrompt, d);
-      } else if (source === "image") {
-        regenFromImage(d, style);
+      if (source === "prompt" || source === "image") {
+        regenFromImage(d, style, background);
       }
     },
-    [source, lastPrompt, generate, regenFromImage, style]
+    [source, regenFromImage, style, background]
   );
 
   const handleStyleChange = useCallback(
     (s: Style) => {
       setStyle(s);
-      if (source === "image") regenFromImage(density, s);
+      if (source === "prompt" || source === "image") {
+        regenFromImage(density, s, background);
+      }
     },
-    [source, density, regenFromImage]
+    [source, density, regenFromImage, background]
+  );
+
+  const handleBackgroundChange = useCallback(
+    (b: BackgroundMode) => {
+      setBackground(b);
+      if (source === "prompt" || source === "image") {
+        regenFromImage(density, style, b);
+      }
+    },
+    [source, density, style, regenFromImage]
   );
 
   const handleRegenerate = () => {
-    if (source === "prompt" && lastPrompt) generate(lastPrompt, density);
-    else if (source === "image") regenFromImage(density, style);
+    if (source === "prompt" && lastPrompt) {
+      generate(lastPrompt, density, style, background);
+    } else if (source === "image") {
+      regenFromImage(density, style, background);
+    }
   };
 
   const handleCopy = () => {
@@ -194,6 +235,8 @@ export default function Home() {
           onDensityChange: handleDensityChange,
           style,
           onStyleChange: handleStyleChange,
+          background,
+          onBackgroundChange: handleBackgroundChange,
           onEnhance: handleEnhance,
           onNew: handleNew,
         }
@@ -201,6 +244,10 @@ export default function Home() {
       ? {
           density,
           onDensityChange: handleDensityChange,
+          style,
+          onStyleChange: handleStyleChange,
+          background,
+          onBackgroundChange: handleBackgroundChange,
           onRegenerate: handleRegenerate,
           onNew: handleNew,
         }
@@ -234,6 +281,7 @@ export default function Home() {
             loading={loading}
             density={density}
             style={style}
+            background={background}
           />
         )}
 

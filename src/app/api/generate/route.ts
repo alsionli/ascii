@@ -1,119 +1,162 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
-import { stripCodeFences, normalizeArt } from "@/lib/asciiUtils";
 
-type Density = "sparse" | "medium" | "dense";
+export const maxDuration = 120;
 
-const DENSITY_INSTRUCTIONS: Record<Density, string> = {
-  sparse: `
-Style: Clean line-art with open whitespace.
-- Use only structural characters: / \\ | - _ ( ) ' \` . :
-- Leave large areas as blank space.
-- Focus on crisp outlines and silhouettes.
-- Minimal interior fill — let the shape breathe.`,
-  medium: `
-Style: Balanced detail with shading.
-- Use structural characters for edges: / \\ | - _ ( ) [ ]
-- Use a brightness gradient for shading: .  :  ;  =  +  *  #  @
-  (. = lightest, @ = darkest)
-- Fill interior regions with appropriate density.
-- Create visible depth through lighter/darker zones.`,
-  dense: `
-Style: Maximum detail, photo-like density.
-- Use the full ASCII gradient for shading:
-  \` . - ' : _ , ; ! ~ + = ^ * ? / \\ | ( ) [ ] { } # % @ & $ W M
-- Every character should contribute to shading or texture.
-- Create smooth tonal gradients from highlights to shadows.
-- Fill the entire bounding area — minimal blank space.
-- Use character density to simulate light, shadow, and volume.`,
+type SiliconFlowImageResponse = {
+  images?: Array<{ url?: string }>;
+  message?: string;
 };
 
-function buildSystemPrompt(density: Density): string {
-  return `You are an ASCII art generator. Output ONLY raw ASCII art — no markdown, no code fences, no backticks, no explanation, no titles.
+function detectImageContentType(bytes: Uint8Array): string | null {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return "image/png";
+  }
 
-RULES:
-1. The art must be 20-30 lines tall and 40-70 characters wide.
-2. Use only printable ASCII characters (codes 32-126).
-3. The subject must be clearly recognizable with correct proportions.
-4. Include the subject's most distinctive features so it is instantly identifiable.
-5. Left-align all lines — do NOT add leading spaces for centering. The leftmost character of the art should start at column 0 on every line that has content.
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return "image/jpeg";
+  }
 
-SHADING (light to dark): . : ; + = * # @ % &
-Outlines: / \\ | - _ ( ) < > [ ]
-${DENSITY_INSTRUCTIONS[density]}`;
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+
+  return null;
+}
+
+function jsonError(message: string, status: number) {
+  return NextResponse.json({ error: message }, { status });
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ARK_API_KEY;
+    const apiKey = process.env.SILICONFLOW_API_KEY;
     if (!apiKey) {
-      return NextResponse.json(
-        { error: "ARK_API_KEY is not configured. Add it to .env.local" },
-        { status: 500 }
+      console.error("SILICONFLOW_API_KEY is not configured");
+      return jsonError(
+        "Image generation is temporarily unavailable. Please try again later.",
+        500
       );
     }
 
-    const { prompt, density = "medium" } = await req.json();
-
+    const { prompt } = await req.json();
     if (!prompt || typeof prompt !== "string") {
-      return NextResponse.json(
-        { error: "A prompt is required" },
-        { status: 400 }
+      return jsonError("A prompt is required", 400);
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 110_000);
+
+    let generatedResponse: Response;
+    try {
+      generatedResponse = await fetch(
+        "https://api.siliconflow.cn/v1/images/generations",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model:
+              process.env.SILICONFLOW_IMAGE_MODEL || "Kwai-Kolors/Kolors",
+            prompt: `${prompt.slice(0, 500)}, centered composition, clearly recognizable subject, clean simple background, strong silhouette, high contrast`,
+            negative_prompt:
+              "text, caption, logo, watermark, cluttered background, cropped subject, low contrast, blurry",
+            image_size: "1024x1024",
+            num_inference_steps: 20,
+            guidance_scale: 7.5,
+          }),
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const payload = (await generatedResponse.json()) as SiliconFlowImageResponse;
+    if (!generatedResponse.ok) {
+      console.error(
+        "SiliconFlow image generation failed:",
+        generatedResponse.status,
+        payload.message
+      );
+
+      if (generatedResponse.status === 401) {
+        return jsonError(
+          "Image generation authentication failed. Please try again later.",
+          401
+        );
+      }
+      if (generatedResponse.status === 429) {
+        return jsonError(
+          "Rate limit reached. Wait a moment and try again.",
+          429
+        );
+      }
+      if (generatedResponse.status === 503 || generatedResponse.status === 504) {
+        return jsonError(
+          "The image model is busy. Wait a moment and try again.",
+          503
+        );
+      }
+
+      return jsonError(
+        payload.message || "Failed to generate the source image.",
+        generatedResponse.status
       );
     }
 
-    const client = new OpenAI({
-      apiKey,
-      baseURL: "https://ark.cn-beijing.volces.com/api/v3",
-      timeout: 30_000,
-    });
-
-    const systemPrompt = buildSystemPrompt(density as Density);
-    const userPrompt = `Create ASCII art of: ${prompt.slice(0, 500)}\n\nMake it instantly recognizable. Output ONLY the ASCII art, nothing else.`;
-
-    const completion = await client.chat.completions.create({
-      model: process.env.ARK_MODEL || "deepseek-v3-2-251201",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.3,
-      max_tokens: 2048,
-    });
-
-    const text = completion.choices[0]?.message?.content;
-    if (!text) {
-      return NextResponse.json(
-        { error: "Model returned an empty response. Try again." },
-        { status: 500 }
-      );
+    const imageUrl = payload.images?.[0]?.url;
+    if (!imageUrl) {
+      return jsonError("The image model returned no image. Try again.", 502);
     }
 
-    return NextResponse.json({ ascii: normalizeArt(stripCodeFences(text)) });
+    const imageResponse = await fetch(imageUrl, { cache: "no-store" });
+    if (!imageResponse.ok) {
+      console.error("Failed to download generated image:", imageResponse.status);
+      return jsonError("Failed to load the generated image. Try again.", 502);
+    }
+
+    const imageBuffer = await imageResponse.arrayBuffer();
+    const upstreamContentType = imageResponse.headers.get("content-type");
+    const detectedContentType = detectImageContentType(
+      new Uint8Array(imageBuffer)
+    );
+
+    return new NextResponse(imageBuffer, {
+      headers: {
+        "Content-Type":
+          detectedContentType ||
+          (upstreamContentType?.startsWith("image/")
+            ? upstreamContentType
+            : "image/jpeg"),
+        "Cache-Control": "no-store",
+      },
+    });
   } catch (err: unknown) {
     const message =
-      err instanceof Error ? err.message : "Failed to generate ASCII art";
+      err instanceof Error ? err.message : "Failed to generate the source image";
     console.error("API error:", message, err instanceof Error ? err.cause : "");
 
-    if (message.includes("401") || message.includes("Unauthorized")) {
-      return NextResponse.json(
-        { error: "Invalid API key. Check your ARK_API_KEY." },
-        { status: 401 }
-      );
-    }
-    if (message.includes("429") || message.includes("rate")) {
-      return NextResponse.json(
-        { error: "Rate limit reached. Wait a moment and try again." },
-        { status: 429 }
-      );
-    }
-    if (message.includes("timed out") || message.includes("timeout") || message.includes("ETIMEDOUT")) {
-      return NextResponse.json(
-        { error: "Generation took too long. Try a simpler prompt." },
-        { status: 504 }
-      );
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return jsonError("Image generation took too long. Please try again.", 504);
     }
 
-    return NextResponse.json({ error: message }, { status: 500 });
+    return jsonError(message, 500);
   }
 }
